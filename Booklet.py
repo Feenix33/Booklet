@@ -142,11 +142,14 @@ class Booklet():
     self.defaultStyle.fontSize = layoutConfig.fontSize
     self.defaultStyle.leading = layoutConfig.leading 
     self.defaultStyle.fontName = layoutConfig.fontName
+    #self.defaultStyle.spaceAfter = 6
 
     self.titleStyle = ParagraphStyle('titleStyle')
     self.titleStyle.fontSize = 10
     self.titleStyle.leading = 12
-    self.titleStyle.alignment = TA_LEFT
+    self.titleStyle.spaceBefore = 6
+    self.titleStyle.spaceAfter = 6
+    self.titleStyle.alignment = TA_CENTER
 
     self.numHorz = layoutConfig.cols
     self.numVert = layoutConfig.rows
@@ -158,27 +161,6 @@ class Booklet():
     self.pageTypeH = layoutConfig.pageTypeH
     self.pageTypeV = layoutConfig.pageTypeV
   
-  def setFontFamily(self, index):
-    if index <= 0:
-      self.defaultStyle.fontName = "Courier"
-    elif index == 1:
-      self.defaultStyle.fontName = "Helvetica"
-    else:
-      self.defaultStyle.fontName = "Times-Roman"
-
-  def setRowCol(self, rows=0, cols=0):
-    if rows != None and rows > 0:
-      self.numHorz = rows
-    if cols != None and cols > 0:
-      self.numVert = cols
-
-  def setBodyFont(self, size):
-    if size < 1:
-      self.defaultStyle.fontSize = 8
-    self.defaultStyle.fontSize = size
-    self.defaultStyle.leading = int(self.defaultStyle.fontSize * 1.25 + 0.5)
-    #self.titleStyle.leading = int(self.defaultStyle.fontSize * 1.25 + 0.5)
-
 
   def divisions(self, totalWidth, numFrames, margin, gutter, useType):
     # take the totalWidth and divide it into the number of frames based on the type
@@ -188,8 +170,7 @@ class Booklet():
     # 2 max use     |mm ffff gg  gg FFFF gg  gg FFFF gg  gg ffff mm|
     columnWidth = totalWidth / numFrames
 
-    #debug
-    print ("type margin gutter = ", useType, margin, gutter)
+    #debug print ("type margin gutter = ", useType, margin, gutter)
 
     if (numFrames == 1 or useType == 0):
       #case 0 no gutter, left is alwas margin, widths are all the same
@@ -232,9 +213,85 @@ class Booklet():
 
     self.doc.addPageTemplates([PageTemplate(id='myFrame',frames=frames)])
 
+  def parseSimple(self, inFileName):
+    #every line is a paragraph
+    inFile = open(inFileName, "r")
+    Elements=[]
+    for inLine in inFile:
+      Elements.append(Paragraph(inLine, self.defaultStyle))
+    return Elements;
 
-  def Build(self, elements):
-    self.doc.build(elements)
+  def parseLines(self, infile):
+    # new paragraph when we see an empty line
+    # multiples get automatically ignored
+    # cannnot force empty paragraphs w/spaces or carriage returns
+    # don't have to worry about the end
+    Elements=[]
+    para=''
+    with open(infile) as f:
+      for inLine in f.read().splitlines():
+        if len(inLine) == 0:
+          Elements.append(Paragraph(para, self.defaultStyle))
+          para=''
+        else:
+          para += inLine
+    Elements.append(Paragraph(para, self.defaultStyle)) #for end of file
+    return Elements;
+
+  def parseCroff(self, infile):
+    #crappy nroff formatting
+    #.ti title, assumes no fill
+    #.li List (unnumbered), end of line is paragraph
+    #.fi Filled, blank line or new command is end of paragraph
+    #.sp Add a half line spacer
+    #.nf New/next frame
+    #.np New/next page
+
+    # work on this
+    # need to move next frame page etc to bottom part to handle 
+    # if the command is closing a mode 2 situation
+    # then add numbered lists
+    mode = 1 #dumb way for now 0"Title", 1"Lines", 2"Compact"
+    Elements=[]
+    para=''
+    with open(infile) as f:
+      for inLine in f.read().splitlines():
+        if len(inLine) > 0 and inLine[0] == '.':
+          if inLine == ".ti":
+            mode = 0 #title
+          elif inLine == ".li" :
+            mode = 1 #lines
+          elif inLine == ".fi" :
+            mode = 2 #compact
+          elif inLine == ".sp" :
+            Elements.append(Spacer(1, 12))
+          elif inLine == ".nf" :
+            Elements.append(FrameBreak())
+          elif inLine == ".np" :
+            Elements.append(PageBreak())
+          else:
+            print ("Error Command " + inLine)
+        else:
+          para += inLine
+          if mode == 0:
+            para = "<b>" + para + "</b>"
+            Elements.append(Paragraph(para, self.titleStyle))
+            para = ''
+          elif mode == 1:
+            Elements.append(Paragraph(para, self.defaultStyle)) #for end of file
+            para = ''
+          else:
+            if len(inLine) == 0:
+              Elements.append(Spacer(1, 12))
+              Elements.append(Paragraph(para, self.defaultStyle)) #for end of file
+              para = ''
+
+    return Elements;
+
+  def Build(self, inFile):
+    #self.doc.build(self.parseSimple(inFile))
+    #self.doc.build(self.parseLines(inFile))
+    self.doc.build(self.parseCroff(inFile))
 
 def main():
   pdfFile = __file__[:-2] + "pdf"
@@ -247,20 +304,12 @@ def main():
   myLayout.SetupParser()
   myLayout.ProcessArgs()
 
-  inFile = open(myLayout.infile, "r")
+  #inFile = open(myLayout.infile, "r")
 
   book = Booklet(pdfFile, myLayout)
-
-
-  book.layout() #book.numHorz, book.numVert)
-
-  Elements=[]
-  styles=getSampleStyleSheet()
-
-  for inLine in inFile:
-    Elements.append(Paragraph(inLine, book.defaultStyle))
-
-  book.Build(Elements)
+  book.layout()
+  #book.Build(inFile)
+  book.Build(myLayout.infile)
 
 
 if __name__ == '__main__':
