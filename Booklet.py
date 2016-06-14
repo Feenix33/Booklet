@@ -1,27 +1,3 @@
-# 001 Class to figure out measurements for frames (not real frames)
-# 002 Update fake frame class to be more self contained (temp hold platypus stuff)
-# 003 Columns approach
-# 004 Refactor 003 to use a Frame Generator; removed simple box layout 
-# 005 Create styles
-# 006 Gutters 
-# 007 Use a generic layout common to horiz and vertical
-# 008 Use parameters in the class instead of passing them all over
-# 009 Clean up some of the subroutines and make them more concise
-# 010 read data from a file; use default file and argument passed file name
-#     pass along different font sizes for the default type
-# 011 Move argument processing to its own routines
-#
-# different types of file: text, text w/blank lines as new para, 
-# file types: list, simple instructions 
-# titles
-# arguments to pass:
-#    paragraph spacing
-#    put in arg proc in own routine
-
-
-# row and column backward, need to test all the parameters
-# try logging vs printing
-
 from reportlab.pdfgen import canvas
 from reportlab.lib.pagesizes import landscape, letter
 from reportlab.pdfgen.canvas import Canvas  # check
@@ -59,7 +35,7 @@ class LayoutConfiguration():
     self.rows = 1
     self.cols = 1
     self.infile = "in.txt"
-
+    self.fileparser = 0
 
   def SetupParser(self):
     self.parser.add_argument("infile", nargs='?',default="in.txt",
@@ -86,6 +62,8 @@ class LayoutConfiguration():
       help="Horizontal gutter width in points (1 inch = 72 points")
     self.parser.add_argument("-gv", "--guttervert", type=int,
       help="Vertical gutter width in points (1 inch = 72 points")
+    self.parser.add_argument("-fp", "--fileparser", type=int,
+      help="File parser type 0=line 1=compact 2=Croff")
 
   def ProcessArgs(self):
     theArgs = self.parser.parse_args()
@@ -128,9 +106,14 @@ class LayoutConfiguration():
     if theArgs.guttervert and theArgs.guttervert > 0:
       self.gutterV = theArgs.guttervert 
 
+    if theArgs.fileparser and theArgs.fileparser > 0:
+      self.fileparser = theArgs.fileparser 
+
     if (not os.path.isfile(theArgs.infile)):
       print ("Input file {} does not exist".format(theArgs.infile))
       exit()
+    else:
+      self.infile = theArgs.infile
 
 
 class Booklet():
@@ -154,13 +137,21 @@ class Booklet():
     self.numHorz = layoutConfig.cols
     self.numVert = layoutConfig.rows
 
+    self.spacerSize = layoutConfig.fontSize
+
     self.gutterH = layoutConfig.gutterH
     self.gutterV = layoutConfig.gutterV
     self.marginH = layoutConfig.marginH
     self.marginV = layoutConfig.marginV
     self.pageTypeH = layoutConfig.pageTypeH
     self.pageTypeV = layoutConfig.pageTypeV
+    self.fileparser = layoutConfig.fileparser  # don't like this duplication
   
+    self.elements=[]
+    self.mode = 0
+    self.para = ''
+    self.paraStyle = self.defaultStyle
+
 
   def divisions(self, totalWidth, numFrames, margin, gutter, useType):
     # take the totalWidth and divide it into the number of frames based on the type
@@ -239,59 +230,79 @@ class Booklet():
     return Elements;
 
   def parseCroff(self, infile):
-    #crappy nroff formatting
-    #.ti title, assumes no fill
-    #.li List (unnumbered), end of line is paragraph
-    #.fi Filled, blank line or new command is end of paragraph
-    #.sp Add a half line spacer
-    #.nf New/next frame
-    #.np New/next page
-
-    # work on this
-    # need to move next frame page etc to bottom part to handle 
-    # if the command is closing a mode 2 situation
-    # then add numbered lists
-    mode = 1 #dumb way for now 0"Title", 1"Lines", 2"Compact"
-    Elements=[]
-    para=''
+    self.mode = 0 # 0 fill, 1 list, 2 title
+    self.para=''
     with open(infile) as f:
       for inLine in f.read().splitlines():
         if len(inLine) > 0 and inLine[0] == '.':
-          if inLine == ".ti":
-            mode = 0 #title
-          elif inLine == ".li" :
-            mode = 1 #lines
-          elif inLine == ".fi" :
-            mode = 2 #compact
-          elif inLine == ".sp" :
-            Elements.append(Spacer(1, 12))
-          elif inLine == ".nf" :
-            Elements.append(FrameBreak())
-          elif inLine == ".np" :
-            Elements.append(PageBreak())
-          else:
-            print ("Error Command " + inLine)
+          self.processCommand(inLine)
         else:
-          para += inLine
-          if mode == 0:
-            para = "<b>" + para + "</b>"
-            Elements.append(Paragraph(para, self.titleStyle))
-            para = ''
-          elif mode == 1:
-            Elements.append(Paragraph(para, self.defaultStyle)) #for end of file
-            para = ''
-          else:
-            if len(inLine) == 0:
-              Elements.append(Spacer(1, 12))
-              Elements.append(Paragraph(para, self.defaultStyle)) #for end of file
-              para = ''
+          self.processData(inLine)
+    if self.para != '':  #end of file, flush our remaining
+      self.elements.append(Paragraph(para, self.defaultStyle))
+      self.para = ''
+    return self.elements;
 
-    return Elements;
+  def processCommand(self, line):
+    #anytime there is a new command, check to clear our paragraph
+    if self.para != '':
+      self.elements.append(Paragraph(self.para, self.defaultStyle))
+      self.para = ''
+    # switch statement through the commands
+    token = line.split()
+    if token[0] == ".fi":
+      self.mode = 0 #fill
+    elif token[0] == ".li" :
+      self.mode = 1 #list
+    elif token[0] == ".ti" :
+      self.mode = 2 #title
+    elif token[0] == ".nl" :
+      self.mode = 3 #numbered list
+    elif token[0] == ".nr" : # reset number
+      self.elements.append(Paragraph("<seqreset id='spam'", self.defaultStyle))
+      self.mode = 3 
+    elif token[0] == ".sp" :
+      if len(token) > 1 and token[1].isdigit():
+        times = int(token[1])
+      else:
+        times = 1
+      for j in range(times):
+        self.elements.append(Spacer(1, self.spacerSize)) 
+    elif token[0] == ".nf" :
+      self.elements.append(FrameBreak())
+    elif token[0] == ".np" :
+      self.elements.append(PageBreak())
+    else:
+      print ("Error Command " + token[0])
+
+
+  def processData(self, line):
+    self.para += line
+    if self.mode == 2:
+      self.para = "<b>" + self.para + "</b>"
+      self.elements.append(Paragraph(self.para, self.titleStyle))
+      self.para = ''
+    elif self.mode == 3:
+      if self.para != '':
+        self.para = "<seq id='spam'/> " + self.para
+        self.elements.append(Paragraph(self.para, self.defaultStyle))
+        self.para = ''
+    elif self.mode == 1: 
+      self.elements.append(Paragraph(self.para, self.defaultStyle)) 
+      self.para = ''
+    else:
+      if len(line) == 0:
+        self.elements.append(Spacer(1, self.spacerSize))
+        self.elements.append(Paragraph(self.para, self.defaultStyle)) #for end of file
+        self.para = ''
 
   def Build(self, inFile):
-    #self.doc.build(self.parseSimple(inFile))
-    #self.doc.build(self.parseLines(inFile))
-    self.doc.build(self.parseCroff(inFile))
+    if self.fileparser == 0:
+      self.doc.build(self.parseSimple(inFile))
+    elif self.fileparser == 1:
+      self.doc.build(self.parseLines(inFile))
+    elif self.fileparser == 2:
+      self.doc.build(self.parseCroff(inFile))
 
 def main():
   pdfFile = __file__[:-2] + "pdf"
